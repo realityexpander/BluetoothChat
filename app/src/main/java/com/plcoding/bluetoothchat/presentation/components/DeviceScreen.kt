@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.Button
+import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -13,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.plcoding.bluetoothchat.domain.chat.BluetoothDevice
 import com.plcoding.bluetoothchat.presentation.BluetoothUiState
+import kotlin.random.Random
 
 @Composable
 fun DeviceScreen(
@@ -20,7 +22,9 @@ fun DeviceScreen(
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
     onStartServer: () -> Unit,
-    onDeviceClick: (BluetoothDevice) -> Unit
+    onDeviceClick: (BluetoothDevice) -> Unit,
+    onSendMessageToClient: (String) -> Unit,
+    onSendMessageToServer: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -34,6 +38,16 @@ fun DeviceScreen(
                 .fillMaxWidth()
                 .weight(1f)
         )
+        Text(
+            state.message
+                ?.split("\n")
+                ?.takeLast(5)
+                ?.joinToString("\n")
+                ?: "",
+            modifier = Modifier.padding(16.dp),
+            color = MaterialTheme.colors.onSurface,
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceAround
@@ -46,6 +60,17 @@ fun DeviceScreen(
             }
             Button(onClick = onStartServer) {
                 Text(text = "Start server")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround
+        ) {
+            Button(onClick = { onSendMessageToClient("from server ${Random.nextInt()}") }) {
+                Text(text = "Send To Client")
+            }
+            Button(onClick = { onSendMessageToServer("from client ${Random.nextInt()}") }) {
+                Text(text = "Send To Server")
             }
         }
     }

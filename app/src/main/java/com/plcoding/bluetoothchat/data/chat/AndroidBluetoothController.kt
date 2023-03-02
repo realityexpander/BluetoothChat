@@ -10,20 +10,27 @@ import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import com.plcoding.bluetoothchat.domain.chat.BluetoothController
 import com.plcoding.bluetoothchat.domain.chat.BluetoothDeviceDomain
 import com.plcoding.bluetoothchat.domain.chat.ConnectionResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.IOException
 import java.util.*
 
 @SuppressLint("MissingPermission")
 class AndroidBluetoothController(
     private val context: Context
-): BluetoothController {
+) : BluetoothController {
 
     private val bluetoothManager by lazy {
         context.getSystemService(BluetoothManager::class.java)
@@ -32,38 +39,54 @@ class AndroidBluetoothController(
         bluetoothManager?.adapter
     }
 
-    private val _isConnected = MutableStateFlow(false)
+    private val _isConnected =
+        MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean>
         get() = _isConnected.asStateFlow()
 
-    private val _scannedDevices = MutableStateFlow<List<BluetoothDeviceDomain>>(emptyList())
+    private val _scannedDevices =
+        MutableStateFlow<List<BluetoothDeviceDomain>>(emptyList())
     override val scannedDevices: StateFlow<List<BluetoothDeviceDomain>>
         get() = _scannedDevices.asStateFlow()
 
-    private val _pairedDevices = MutableStateFlow<List<BluetoothDeviceDomain>>(emptyList())
+    private val _pairedDevices =
+        MutableStateFlow<List<BluetoothDeviceDomain>>(emptyList())
     override val pairedDevices: StateFlow<List<BluetoothDeviceDomain>>
         get() = _pairedDevices.asStateFlow()
 
-    private val _errors = MutableSharedFlow<String>()
+    private val _errors =
+        MutableSharedFlow<String>()
     override val errors: SharedFlow<String>
         get() = _errors.asSharedFlow()
 
-    private val foundDeviceReceiver = FoundDeviceReceiver { device ->
-        _scannedDevices.update { devices ->
-            val newDevice = device.toBluetoothDeviceDomain()
-            if(newDevice in devices) devices else devices + newDevice
-        }
-    }
+    override val sendToClientStateFlow =
+        MutableStateFlow("")
 
-    private val bluetoothStateReceiver = BluetoothStateReceiver { isConnected, bluetoothDevice ->
-        if(bluetoothAdapter?.bondedDevices?.contains(bluetoothDevice) == true) {
-            _isConnected.update { isConnected }
-        } else {
-            CoroutineScope(Dispatchers.IO).launch {
-                _errors.emit("Can't connect to a non-paired device.")
+    override val sendToServerStateFlow =
+        MutableStateFlow("")
+
+    private val foundDeviceBroadcastReceiver =
+        FoundDeviceBroadcastReceiver(
+            onDeviceFound = { device ->
+                _scannedDevices.update { devices ->
+                    val newDevice = device.toBluetoothDeviceDomain()
+                    if (newDevice in devices) devices else devices + newDevice
+                }
             }
-        }
-    }
+        )
+
+    private val bluetoothStateBroadcastReceiver =
+        BluetoothStateBroadcastReceiver(
+            onStateChanged = { isConnected, bluetoothDevice ->
+                _isConnected.update { isConnected }
+                if (isConnected) {
+                    _pairedDevices.update { devices ->
+                        val newDevice = bluetoothDevice.toBluetoothDeviceDomain()
+                        if (newDevice in devices) devices else devices + newDevice
+                    }
+                }
+            }
+        )
 
     private var currentServerSocket: BluetoothServerSocket? = null
     private var currentClientSocket: BluetoothSocket? = null
@@ -71,7 +94,7 @@ class AndroidBluetoothController(
     init {
         updatePairedDevices()
         context.registerReceiver(
-            bluetoothStateReceiver,
+            bluetoothStateBroadcastReceiver,
             IntentFilter().apply {
                 addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
@@ -81,12 +104,14 @@ class AndroidBluetoothController(
     }
 
     override fun startDiscovery() {
-        if(!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
-            return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
+                return
+            }
         }
 
         context.registerReceiver(
-            foundDeviceReceiver,
+            foundDeviceBroadcastReceiver,
             IntentFilter(BluetoothDevice.ACTION_FOUND)
         )
 
@@ -96,8 +121,10 @@ class AndroidBluetoothController(
     }
 
     override fun stopDiscovery() {
-        if(!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
-            return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
+                return
+            }
         }
 
         bluetoothAdapter?.cancelDiscovery()
@@ -105,8 +132,10 @@ class AndroidBluetoothController(
 
     override fun startBluetoothServer(): Flow<ConnectionResult> {
         return flow {
-            if(!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
-                throw SecurityException("No BLUETOOTH_CONNECT permission")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                    throw SecurityException("No BLUETOOTH_CONNECT permission")
+                }
             }
 
             currentServerSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord(
@@ -115,27 +144,103 @@ class AndroidBluetoothController(
             )
 
             var shouldLoop = true
-            while(shouldLoop) {
+            while (shouldLoop) {
+                var error: ConnectionResult? = null
+
+                emit(ConnectionResult.ConnectionEstablished)
                 currentClientSocket = try {
                     currentServerSocket?.accept()
-                } catch(e: IOException) {
+                } catch (e: IOException) {
                     shouldLoop = false
                     null
                 }
-                emit(ConnectionResult.ConnectionEstablished)
+
+                // Communicate with the client
+                currentClientSocket?.let { socket ->
+                    val inputStream = socket.inputStream
+                    val outputStream = socket.outputStream
+                    val buffer = ByteArray(1024)
+                    var bytes: Int
+
+                    emit(ConnectionResult.ConnectionEstablished)
+                    println("Connected to ${socket.remoteDevice.name} (${socket.remoteDevice.address})")
+
+                    // Send a heartbeat ping to client
+                    CoroutineScope(Dispatchers.IO).launch {
+                        while (true) {
+                            try {
+                                delay(1000)
+                                val message = "server.ping: ${
+                                    System.currentTimeMillis().toString().takeLast(6)
+                                }"
+                                withContext(Dispatchers.IO) {
+                                    outputStream.write(message.toByteArray())
+                                }
+                            } catch (e: IOException) {
+                                error = ConnectionResult.Error("Connection was interrupted")
+                                shouldLoop = false
+                                break
+                            }
+                        }
+                    }
+
+                    // Send message to client from MutableStateFlow
+                    CoroutineScope(Dispatchers.IO).launch {
+                        while (true) {
+                            try {
+                                yield()
+                                sendToClientStateFlow.collectLatest { message ->
+                                    outputStream.write(message.toByteArray())
+                                }
+                            } catch (e: IOException) {
+                                error = ConnectionResult.Error("Connection was interrupted")
+                                shouldLoop = false
+                                break
+                            }
+                        }
+                    }
+
+                    // Read message from client
+                    while (true) {
+                        try {
+                            bytes =
+                                withContext(Dispatchers.IO) {
+                                    inputStream.read(buffer)
+                                }
+                            val readMessage = String(buffer, 0, bytes)
+                            emit(ConnectionResult.Message(readMessage))
+
+                            // Send message back
+                            val message = "from server: $readMessage"
+                            yield()
+                            withContext(Dispatchers.IO) {
+                                outputStream.write(message.toByteArray())
+                            }
+                        } catch (e: IOException) {
+                            error = ConnectionResult.Error("Connection was interrupted")
+                            shouldLoop = false
+                            break
+                        }
+                    }
+                }
+
+                error?.let { emit(it) }
                 currentClientSocket?.let {
                     currentServerSocket?.close()
                 }
             }
         }.onCompletion {
+            println("onCompletion - throwable: ${it?.localizedMessage}")
             closeConnection()
         }.flowOn(Dispatchers.IO)
     }
 
     override fun connectToDevice(device: BluetoothDeviceDomain): Flow<ConnectionResult> {
         return flow {
-            if(!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
-                throw SecurityException("No BLUETOOTH_CONNECT permission")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                    throw SecurityException("No BLUETOOTH_CONNECT permission")
+                }
             }
 
             currentClientSocket = bluetoothAdapter
@@ -144,18 +249,73 @@ class AndroidBluetoothController(
                     UUID.fromString(SERVICE_UUID)
                 )
             stopDiscovery()
+            println("Connecting to ${device.name} (${device.address})")
+            println("Socket: $currentClientSocket")
 
+            // Connect to the server
             currentClientSocket?.let { socket ->
                 try {
                     socket.connect()
                     emit(ConnectionResult.ConnectionEstablished)
-                } catch(e: IOException) {
+                } catch (e: IOException) {
                     socket.close()
                     currentClientSocket = null
                     emit(ConnectionResult.Error("Connection was interrupted"))
                 }
             }
+
+            // Communicate with the server
+            currentClientSocket?.let { socket ->
+                val inputStream = socket.inputStream
+                val outputStream = socket.outputStream
+                val buffer = ByteArray(1024)
+                var bytes: Int
+
+
+                // send an initial hello message to server
+                withContext(Dispatchers.IO) {
+                    outputStream.write("Hello from Client".toByteArray())
+                }
+
+                // Send messages from MutableStateFlow to server
+                CoroutineScope(Dispatchers.IO).launch {
+                    sendToServerStateFlow.collectLatest { message ->
+                        outputStream ?: return@collectLatest
+
+                        withContext(Dispatchers.IO) {
+                            outputStream.write(message.toByteArray())
+                        }
+                    }
+                }
+
+                // get messages from server
+                var isRunning = true
+                while (isRunning) {
+                    try {
+                        yield()
+//                        bytes = withContext(Dispatchers.IO) {
+//                            inputStream.read(buffer)
+//                        }
+                        bytes = inputStream.read(buffer)
+                        val readMessage = String(buffer, 0, bytes)
+
+                        emit(ConnectionResult.Message(readMessage))
+                        println("Message from server: $readMessage")
+                    } catch (e: IOException) {
+                        emit(ConnectionResult.Error("Connection was interrupted"))
+                        isRunning = false
+                        break
+                    }
+                }
+            }
+
+            currentClientSocket?.let {
+                println("Connection was interrupted")
+                currentClientSocket?.close()
+            }
+
         }.onCompletion {
+            println("onCompletion - throwable: ${it?.localizedMessage}")
             closeConnection()
         }.flowOn(Dispatchers.IO)
     }
@@ -168,18 +328,22 @@ class AndroidBluetoothController(
     }
 
     override fun release() {
-        context.unregisterReceiver(foundDeviceReceiver)
-        context.unregisterReceiver(bluetoothStateReceiver)
+        context.unregisterReceiver(foundDeviceBroadcastReceiver)
+        context.unregisterReceiver(bluetoothStateBroadcastReceiver)
         closeConnection()
     }
 
     private fun updatePairedDevices() {
-        if(!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
-            return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                return
+            }
         }
         bluetoothAdapter
             ?.bondedDevices
-            ?.map { it.toBluetoothDeviceDomain() }
+            ?.map { bluetoothDevice ->
+                bluetoothDevice.toBluetoothDeviceDomain()
+            }
             ?.also { devices ->
                 _pairedDevices.update { devices }
             }
