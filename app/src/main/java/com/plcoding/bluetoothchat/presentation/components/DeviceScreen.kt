@@ -8,6 +8,10 @@ import androidx.compose.material.Button
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -24,8 +28,11 @@ fun DeviceScreen(
     onStartServer: () -> Unit,
     onDeviceClick: (BluetoothDevice) -> Unit,
     onSendMessageToClient: (String) -> Unit,
-    onSendMessageToServer: (String) -> Unit
+    onSendMessageToServer: (String) -> Unit,
+    onRefreshDeviceList: () -> Unit,
 ) {
+    var counter by remember { mutableStateOf(0) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -39,7 +46,7 @@ fun DeviceScreen(
                 .weight(1f)
         )
         Text(
-            state.message
+            state.messages
                 ?.split("\n")
                 ?.takeLast(5)
                 ?.joinToString("\n")
@@ -66,11 +73,34 @@ fun DeviceScreen(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceAround
         ) {
-            Button(onClick = { onSendMessageToClient("from server ${Random.nextInt()}") }) {
+            Button(
+                onClick = {
+                    counter++
+                    onSendMessageToClient("from server ${counter}")
+                }
+            ) {
                 Text(text = "Send To Client")
             }
-            Button(onClick = { onSendMessageToServer("from client ${Random.nextInt()}") }) {
+            Button(
+                onClick = {
+                    counter++
+                    onSendMessageToServer("from client ${counter}")
+                }
+            ) {
                 Text(text = "Send To Server")
+            }
+
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround
+        ) {
+            Button(
+                onClick = {
+                    onRefreshDeviceList()
+                }
+            ) {
+                Text(text = "Refresh Devices")
             }
         }
     }

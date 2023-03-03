@@ -1,16 +1,17 @@
 package com.plcoding.bluetoothchat.presentation
 
+import androidx.compose.runtime.toMutableStateList
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plcoding.bluetoothchat.domain.chat.BluetoothController
 import com.plcoding.bluetoothchat.domain.chat.BluetoothDeviceDomain
 import com.plcoding.bluetoothchat.domain.chat.ConnectionResult
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import kotlin.random.Random
 
 @HiltViewModel
 class BluetoothViewModel @Inject constructor(
@@ -44,9 +45,17 @@ class BluetoothViewModel @Inject constructor(
             ) }
         }.launchIn(viewModelScope)
 
-        watchForMessages()
+        // Show received messages
+        bluetoothController.messageReceiveStateFlow.onEach { message ->
+            _state.update { it.copy(
+                messages = it.messages +"\n" + message
+            ) }
+        }.launchIn(viewModelScope)
+
+        monitorMessages()
     }
 
+    @OptIn(InternalCoroutinesApi::class)
     fun connectToDevice(device: BluetoothDeviceDomain) {
         _state.update { it.copy(isConnecting = true) }
         deviceConnectionJob = bluetoothController
@@ -75,14 +84,22 @@ class BluetoothViewModel @Inject constructor(
     }
 
     fun sendMessageToClient(message: String) {
-        bluetoothController.sendToClientStateFlow.update { message }
+//        bluetoothController.messageSendToClientStateFlow.update { message }
+        viewModelScope.launch {
+            bluetoothController.messageSendToClientSharedFlow.emit(message)
+        }
+    }
+
+    fun refreshDeviceList() {
+        bluetoothController.refreshDeviceList()
     }
 
     fun sendMessageToServer(message: String) {
-        bluetoothController.sendToServerStateFlow.update { message }
+        bluetoothController.messageSendToServerStateFlow.update { message }
     }
 
     fun startScan() {
+        bluetoothController.clearDeviceList()
         bluetoothController.startDiscovery()
     }
 
@@ -90,10 +107,12 @@ class BluetoothViewModel @Inject constructor(
         bluetoothController.stopDiscovery()
     }
 
-    fun watchForMessages() {
+    fun monitorMessages() {
+        return
+
         state.onEach {
-            if(it.message != null) {
-                val lastMsg = it.message.split("\n").last()
+            if(it.messages != null) {
+                val lastMsg = it.messages.split("\n").last()
 
                 if(lastMsg.contains("from client")) {
                     sendMessageToServer("from server XXXXXXXXXXX YOLO")
@@ -117,14 +136,15 @@ class BluetoothViewModel @Inject constructor(
                         isConnected = true,
                         isConnecting = false,
                         errorMessage = null,
-                        message = it.message +"\n" + result.message
+                        messages = it.messages +"\n" + result.message
                     ) }
                 }
                 is ConnectionResult.Error -> {
                     _state.update { it.copy(
                         isConnected = false,
                         isConnecting = false,
-                        errorMessage = result.message
+                        errorMessage = result.message,
+                        messages = it.messages +"\n" + result.message
                     ) }
                 }
             }
@@ -143,6 +163,12 @@ class BluetoothViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        bluetoothController.release()
+        if(deviceConnectionJob?.isActive == true) {
+            deviceConnectionJob?.cancel()
+        }
+        if(bluetoothController.isConnected.value) {
+            bluetoothController.closeConnection()
+            bluetoothController.release()
+        }
     }
 }

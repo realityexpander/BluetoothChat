@@ -8,5 +8,5 @@ data class BluetoothUiState(
     val isConnected: Boolean = false,
     val isConnecting: Boolean = false,
     val errorMessage: String? = null,
-    val message: String? = null
+    val messages: String? = null
 )

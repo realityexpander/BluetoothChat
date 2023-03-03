@@ -117,7 +117,8 @@ class MainActivity : ComponentActivity() {
                                 onDeviceClick = viewModel::connectToDevice,
                                 onStartServer = viewModel::waitForIncomingConnections,
                                 onSendMessageToClient = viewModel::sendMessageToClient,
-                                onSendMessageToServer = viewModel::sendMessageToServer
+                                onSendMessageToServer = viewModel::sendMessageToServer,
+                                onRefreshDeviceList = viewModel::refreshDeviceList,
                             )
                         }
                     }
