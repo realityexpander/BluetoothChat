@@ -1,6 +1,5 @@
 package com.plcoding.bluetoothchat.presentation
 
-import androidx.compose.runtime.toMutableStateList
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plcoding.bluetoothchat.domain.chat.BluetoothController
@@ -11,6 +10,7 @@ import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import javax.inject.Inject
 
 @HiltViewModel
@@ -30,7 +30,8 @@ class BluetoothViewModel @Inject constructor(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), _state.value)
 
-    private var deviceConnectionJob: Job? = null
+    private var clientConnectionJob: Job? = null
+    private var serverConnectionJob: Job? = null
 
     init {
         // Show connection status
@@ -55,17 +56,24 @@ class BluetoothViewModel @Inject constructor(
         monitorMessages()
     }
 
-    @OptIn(InternalCoroutinesApi::class)
-    fun connectToDevice(device: BluetoothDeviceDomain) {
+    fun connectToServer(device: BluetoothDeviceDomain) {
         _state.update { it.copy(isConnecting = true) }
-        deviceConnectionJob = bluetoothController
-            .connectToDevice(device)
-            .listen()
+
+        clientConnectionJob?.cancel()
+        clientConnectionJob = bluetoothController
+            .connectToServer(device)
+            .listen (
+                onConnectionClosed = {
+                    bluetoothController.closeClientConnection()
+                }
+            )
+
+        println("Client Connected to Server - Now processing messages...")
     }
 
-    fun disconnectFromDevice() {
-        deviceConnectionJob?.cancel()
-        bluetoothController.closeConnection()
+    fun disconnectFromServer() {
+        clientConnectionJob?.cancel()
+        //bluetoothController.closeConnection()
 
         _state.update { it.copy(
             isConnecting = false,
@@ -73,14 +81,29 @@ class BluetoothViewModel @Inject constructor(
         ) }
     }
 
-    fun waitForIncomingConnections() {
+    fun shutdownServer() {
+        serverConnectionJob?.cancel()
+        //bluetoothController.closeConnection()
+
+        _state.update { it.copy(
+            isConnecting = false,
+            //isConnected = false
+        ) }
+
+        println("Server shut down.")
+    }
+
+    fun serveIncomingConnections() {
         _state.update { it.copy(isConnecting = true) }
 
-        deviceConnectionJob = bluetoothController
-            .startBluetoothServer()
-            .listen()
+        serverConnectionJob?.cancel()
+        serverConnectionJob = bluetoothController
+            .startServer()
+            .listen {
+                bluetoothController.closeServerConnection()
+            }
 
-        println("Server Job Started - Waiting for incoming connections...")
+        println("Server Job Started - Now processing incoming connections...")
     }
 
     fun sendMessageToClient(message: String) {
@@ -121,7 +144,9 @@ class BluetoothViewModel @Inject constructor(
         }.launchIn(viewModelScope)
     }
 
-    private fun Flow<ConnectionResult>.listen(): Job {
+    private fun Flow<ConnectionResult>.listen(
+        onConnectionClosed: () -> Unit = {}
+    ): Job {
         return this.onEach { result ->
             when(result) {
                 ConnectionResult.ConnectionEstablished -> {
@@ -152,7 +177,7 @@ class BluetoothViewModel @Inject constructor(
         .catch { throwable ->
             println("Error: ${throwable.localizedMessage}")
 
-            bluetoothController.closeConnection()
+            onConnectionClosed()
             _state.update { it.copy(
                 isConnected = false,
                 isConnecting = false,
@@ -163,11 +188,11 @@ class BluetoothViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        if(deviceConnectionJob?.isActive == true) {
-            deviceConnectionJob?.cancel()
+        if(clientConnectionJob?.isActive == true) {
+            clientConnectionJob?.cancel()
         }
         if(bluetoothController.isConnected.value) {
-            bluetoothController.closeConnection()
+            bluetoothController.closeAllConnections()
             bluetoothController.release()
         }
     }

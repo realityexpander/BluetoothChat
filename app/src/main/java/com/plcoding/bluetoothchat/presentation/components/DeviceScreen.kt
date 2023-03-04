@@ -76,18 +76,18 @@ fun DeviceScreen(
             Button(
                 onClick = {
                     counter++
-                    onSendMessageToClient("from server ${counter}")
-                }
-            ) {
-                Text(text = "Send To Client")
-            }
-            Button(
-                onClick = {
-                    counter++
                     onSendMessageToServer("from client ${counter}")
                 }
             ) {
                 Text(text = "Send To Server")
+            }
+            Button(
+                onClick = {
+                    counter++
+                    onSendMessageToClient("from server ${counter}")
+                }
+            ) {
+                Text(text = "Send To Client")
             }
 
         }
