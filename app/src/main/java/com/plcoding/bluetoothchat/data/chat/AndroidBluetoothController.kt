@@ -17,6 +17,8 @@ import com.plcoding.bluetoothchat.domain.chat.BluetoothDeviceDomain
 import com.plcoding.bluetoothchat.domain.chat.ConnectionResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -232,7 +234,7 @@ class AndroidBluetoothController(
 
             ///////////////////////////////
             // Accept multiple connections
-            if(false) {
+            if (false) {
                 var shouldLoop2 = true
                 while (shouldLoop2) {
                     val clientSocket = currentServerSocket?.accept()
@@ -312,7 +314,7 @@ class AndroidBluetoothController(
                 }
             }
 
-            if(true){
+            if (true) {
                 processMultipleConnections()
             }
 
@@ -347,9 +349,16 @@ class AndroidBluetoothController(
 
             // Send messages from server to client
             CoroutineScope(Dispatchers.IO).launch {
-
                 messageSendToClientSharedFlow.collect {
-                    println("clientSocket=$clientSocket, messageSendToClientSharedFlow=$it")
+                    println(
+                        "clientSocket=${clientSocket.isConnected}, " +
+                                "messageSendToClientSharedFlow=$it, " +
+                                "coroutineScope=$this"
+                    )
+
+                    if (!clientSocket.isConnected) {
+                        cancel("clientSocket is not connected")
+                    }
 
                     val message = it
                     if (message.isNotEmpty()) {
@@ -402,6 +411,7 @@ class AndroidBluetoothController(
                             "Connection was interrupted " + "${e.localizedMessage}"
                         )
                         clientSocket.close()
+                        cancel("clientSocket is not connected")
                         break
                     } catch (e: Exception) {
                         coroutineContext.ensureActive()
@@ -409,20 +419,17 @@ class AndroidBluetoothController(
                             "Connection was interrupted " + "with unexpected exception: ${e.localizedMessage}"
                         )
                         clientSocket.close()
+                        cancel("clientSocket is not connected")
                         break
                     }
                 }
+
+                println("Disconnected - clientSocket.isConnected=${clientSocket.isConnected}")
+                println("Disconnected - Read message from client END, shouldLoop=$shouldLoop, error=$error")
             }
-
-            println("startBluetoothServer END clientSocket=$clientSocket, shouldLoop=$shouldLoop")
-
-//                // Close the socket?
-//                if(!shouldLoop2) {
-//                    clientSocket.let {
-//                        clientSocket.close()
-//                    }
-//                }
         }
+
+        println("startBluetoothServer END shouldLoop=$shouldLoop, error=$error")
 
         // after server error
         error?.let {
@@ -552,12 +559,12 @@ class AndroidBluetoothController(
             }
         }
 
-        if(currentClientSocket?.isConnected == true) {
+        if (currentClientSocket?.isConnected == true) {
             currentClientSocket!!.close()
         }
 
 //            currentClientSocket = bluetoothAdapter?.getRemoteDevice(device.address)
-        var sessionSocket =  bluetoothAdapter?.getRemoteDevice(device.address)
+        var sessionSocket = bluetoothAdapter?.getRemoteDevice(device.address)
             ?.createRfcommSocketToServiceRecord(
                 UUID.fromString(SERVICE_UUID)
             )
@@ -700,10 +707,10 @@ class AndroidBluetoothController(
         bluetoothAdapter?.cancelDiscovery()
 
         bluetoothAdapter?.bondedDevices?.map { bluetoothDevice ->
-                bluetoothDevice.toBluetoothDeviceDomain()
-            }?.also { devices ->
-                _pairedDevices.update { devices }
-            }
+            bluetoothDevice.toBluetoothDeviceDomain()
+        }?.also { devices ->
+            _pairedDevices.update { devices }
+        }
     }
 
     private fun hasPermission(permission: String): Boolean {
